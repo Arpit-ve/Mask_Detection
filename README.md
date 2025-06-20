@@ -18,7 +18,7 @@ Jupyter Notebook
 
  Installation
 1. Clone the repository:
-git clone https://github.com/your-username/face-mask-detection.git
+git clone https://github.com/Arpit-ve/Mask_Detection.git
 cd face-mask-detection
 
 2. Install required libraries:
