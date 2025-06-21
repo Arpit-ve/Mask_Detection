@@ -1,89 +1,73 @@
+# detect_mask_video.py
+
 import cv2
-import os
 import numpy as np
 from tensorflow.keras.models import load_model
-from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
-from tensorflow.keras.preprocessing.image import img_to_array
-import imutils
 
-# Load face detector model
-prototxtPath = os.path.sep.join(["face_detector", "deploy.prototxt"])
-weightsPath = os.path.sep.join(["face_detector", "res10_300x300_ssd_iter_140000.caffemodel"])
+# Load model
+model = load_model("mask_detector.model")
+
+prototxtPath = "face_detector/deploy.prototxt"
+weightsPath = "face_detector/res10_300x300_ssd_iter_140000.caffemodel"
 faceNet = cv2.dnn.readNet(prototxtPath, weightsPath)
 
-# Load trained mask detector model
-maskNet = load_model("mask_detector.h5")
+# Labels
+labels_dict = {0: "Mask", 1: "No Mask"}
+color_dict = {0: (0, 255, 0), 1: (0, 0, 255)}
 
-# Function to detect and predict mask
-def detect_and_predict_mask(frame, faceNet, maskNet):
-    (h, w) = frame.shape[:2]
+# Start video capture
+cap = cv2.VideoCapture(0)
+
+while True:
+    ret, frame = cap.read()
+    frame = cv2.resize(frame, (640, 480))  # ✅ Resize to speed up
+    if not ret:
+        break
+
+    h, w = frame.shape[:2]
     blob = cv2.dnn.blobFromImage(frame, 1.0, (300, 300),
                                  (104.0, 177.0, 123.0))
-    
+
     faceNet.setInput(blob)
     detections = faceNet.forward()
-
-    faces = []
-    locs = []
 
     for i in range(0, detections.shape[2]):
         confidence = detections[0, 0, i, 2]
 
-        if confidence > 0.5:
+        if confidence > 0.6:
             box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
             (startX, startY, endX, endY) = box.astype("int")
 
+            # Ensure the bounding boxes fall within the dimensions of the frame
             startX, startY = max(0, startX), max(0, startY)
             endX, endY = min(w - 1, endX), min(h - 1, endY)
 
+            # Extract face ROI
             face = frame[startY:endY, startX:endX]
             if face.size == 0:
                 continue
+
             face = cv2.resize(face, (224, 224))
-            face = img_to_array(face)
-            face = preprocess_input(face)
+            face = face.astype("float") / 255.0
+            face = np.expand_dims(face, axis=0)
 
-            faces.append(face)
-            locs.append((startX, startY, endX, endY))
+            # Predict mask/no mask
+            preds = model.predict(face, verbose=0)
+            label = 0 if preds[0][0] < 0.5 else 1
 
-    if len(faces) > 0:
-        faces = np.array(faces, dtype="float32")
-        preds = maskNet.predict(faces, batch_size=32)
-    else:
-        preds = []
+            label_text = labels_dict[label]
+            color = color_dict[label]
 
-    return (locs, preds)
-
-# Start video stream
-print("[INFO] Starting video stream...")
-vs = cv2.VideoCapture(0)
-
-while True:
-    ret, frame = vs.read()
-    if not ret:
-        break
-
-    frame = imutils.resize(frame, width=800)
-    (locs, preds) = detect_and_predict_mask(frame, faceNet, maskNet)
-
-    for (box, pred) in zip(locs, preds):
-        (startX, startY, endX, endY) = box
-        (mask, withoutMask) = pred
-
-        label = "Mask" if mask > withoutMask else "No Mask"
-        color = (0, 255, 0) if label == "Mask" else (0, 0, 255)
-
-        label = f"{label}: {max(mask, withoutMask) * 100:.2f}%"
-
-        cv2.putText(frame, label, (startX, startY - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 2)
-        cv2.rectangle(frame, (startX, startY), (endX, endY), color, 2)
+            # Display
+            cv2.putText(frame, label_text, (startX, startY - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 2)
+            cv2.rectangle(frame, (startX, startY), (endX, endY), color, 2)
 
     cv2.imshow("Face Mask Detector", frame)
-    key = cv2.waitKey(1) & 0xFF
-
-    if key == ord("q"):
+    key = cv2.waitKey(1)
+    if key == ord('q'):
         break
 
-vs.release()
+cap.release()
 cv2.destroyAllWindows()
+
