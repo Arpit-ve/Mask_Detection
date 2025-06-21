@@ -1,62 +1,51 @@
-# import the necessary packages
-import os
-import numpy as np
-import matplotlib.pyplot as plt
-from tensorflow.keras.preprocessing.image import ImageDataGenerator, img_to_array
+# train_mask_detector.py
+
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras.applications import MobileNetV2
-from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
 from tensorflow.keras.layers import AveragePooling2D, Dropout, Flatten, Dense, Input
 from tensorflow.keras.models import Model
-from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.utils import to_categorical
-from sklearn.preprocessing import LabelBinarizer
+from tensorflow.keras.optimizers.legacy import Adam
+from tensorflow.keras.preprocessing.image import img_to_array, load_img
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelBinarizer
 from sklearn.metrics import classification_report
 from imutils import paths
+import numpy as np
+import os
 import cv2
+import matplotlib.pyplot as plt
 
-# Set initial parameters
+# PARAMETERS
 INIT_LR = 1e-4
-EPOCHS = 20
+EPOCHS = 10
 BS = 32
-DATASET_PATH = "dataset"  # Make sure this folder contains "with_mask" and "without_mask" subfolders
+DIRECTORY = r"dataset"
+CATEGORIES = ["with_mask", "without_mask"]
 
-# Load the image paths
 print("[INFO] loading images...")
-imagePaths = list(paths.list_images(DATASET_PATH))
 data = []
 labels = []
 
-# Loop over the image paths
-for imagePath in imagePaths:
-    label = imagePath.split(os.path.sep)[-2]
-    image = cv2.imread(imagePath)
+for category in CATEGORIES:
+    path = os.path.join(DIRECTORY, category)
+    for img in os.listdir(path):
+        img_path = os.path.join(path, img)
+        image = load_img(img_path, target_size=(224, 224))
+        image = img_to_array(image)
+        image = image / 255.0
+        data.append(image)
+        labels.append(category)
 
-    # Skip unreadable or corrupt images
-    if image is None:
-        print(f"[WARNING] Skipping unreadable image: {imagePath}")
-        continue
+# Encode Labels
+lb = LabelBinarizer()
+labels = lb.fit_transform(labels)
+labels = np.array(labels)
 
-    image = cv2.resize(image, (224, 224))
-    image = img_to_array(image)
-    image = preprocess_input(image)
-
-    data.append(image)
-    labels.append(label)
-
-
-# Convert to NumPy arrays
 data = np.array(data, dtype="float32")
 labels = np.array(labels)
 
-# Perform one-hot encoding on labels
-lb = LabelBinarizer()
-labels = lb.fit_transform(labels)
-labels = to_categorical(labels)
-
-# Split into training and testing sets
-(trainX, testX, trainY, testY) = train_test_split(data, labels,
-                                                  test_size=0.20, stratify=labels, random_state=42)
+# Split dataset
+(trainX, testX, trainY, testY) = train_test_split(data, labels, test_size=0.20, stratify=labels, random_state=42)
 
 # Data augmentation
 aug = ImageDataGenerator(
@@ -69,32 +58,29 @@ aug = ImageDataGenerator(
     fill_mode="nearest"
 )
 
-# Load the MobileNetV2 base model
-baseModel = MobileNetV2(weights="imagenet", include_top=False,
-                        input_tensor=Input(shape=(224, 224, 3)))
+# Load base model
+baseModel = MobileNetV2(weights="imagenet", include_top=False, input_tensor=Input(shape=(224, 224, 3)))
 
-# Construct head of the model
+# Construct head
 headModel = baseModel.output
 headModel = AveragePooling2D(pool_size=(7, 7))(headModel)
-headModel = Flatten(name="flatten")(headModel)
+headModel = Flatten()(headModel)
 headModel = Dense(128, activation="relu")(headModel)
 headModel = Dropout(0.5)(headModel)
-headModel = Dense(2, activation="softmax")(headModel)
+headModel = Dense(1, activation="sigmoid")(headModel)
 
-# Combine base and head
 model = Model(inputs=baseModel.input, outputs=headModel)
 
-# Freeze base layers
+# Freeze base model layers
 for layer in baseModel.layers:
     layer.trainable = False
 
 # Compile model
 print("[INFO] compiling model...")
 opt = Adam(learning_rate=INIT_LR, decay=INIT_LR / EPOCHS)
-model.compile(loss="binary_crossentropy", optimizer=opt,
-              metrics=["accuracy"])
+model.compile(loss="binary_crossentropy", optimizer=opt, metrics=["accuracy"])
 
-# Train the model
+# Train model
 print("[INFO] training head...")
 H = model.fit(
     aug.flow(trainX, trainY, batch_size=BS),
@@ -104,14 +90,15 @@ H = model.fit(
     epochs=EPOCHS
 )
 
-# Evaluate the model
+# Evaluate model
 print("[INFO] evaluating network...")
 predIdxs = model.predict(testX, batch_size=BS)
-predIdxs = np.argmax(predIdxs, axis=1)
-print(classification_report(testY.argmax(axis=1), predIdxs,
-                            target_names=lb.classes_))
+predIdxs = (predIdxs > 0.5).astype("int32")
 
-# Save the model
+print(classification_report(testY, predIdxs, target_names=lb.classes_))
+
+# Save model
 print("[INFO] saving mask detector model...")
-model.save("mask_detector.model.h5")
+model.save("mask_detector.model", save_format="h5")
+
 
